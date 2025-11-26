@@ -149,38 +149,47 @@ const pushCommitChartToUlanzi = (commitData: { days: number[]; total: number }) 
   Effect.gen(function* () {
     const client = yield* HttpClient.HttpClient
 
-    // Create a bar chart with the commit data
+    // GitHub-style contribution chart with squares
     const maxCommits = Math.max(...commitData.days, 1)
-    const barWidth = 3
-    const barSpacing = 1
-    const maxBarHeight = 6
-    const startX = 3
-    const baseY = 7
+    const squareSize = 3
+    const spacing = 1
+    const startX = 2
+    const startY = 1
+
+    // Define color intensity levels (GitHub-style)
+    const getColorForCommits = (commits: number): string => {
+      if (commits === 0) return "#161B22" // Dark background (no commits)
+
+      const intensity = Math.min(commits / Math.max(maxCommits, 4), 1)
+
+      if (intensity <= 0.25) return "#0E4429" // Level 1 - darkest green
+      if (intensity <= 0.5) return "#006D32"  // Level 2
+      if (intensity <= 0.75) return "#26A641" // Level 3
+      return "#39D353"                        // Level 4 - brightest green
+    }
 
     const drawCommands = []
 
-    // Draw bars for each day
+    // Draw squares for each day
     for (let i = 0; i < commitData.days.length; i++) {
       const commits = commitData.days[i]
-      const barHeight = Math.ceil((commits / maxCommits) * maxBarHeight)
-      const x = startX + i * (barWidth + barSpacing)
-      const y = baseY - barHeight
+      const x = startX + i * (squareSize + spacing)
+      const y = startY
+      const color = getColorForCommits(commits)
 
-      if (barHeight > 0) {
-        drawCommands.push({
-          type: "rf",
-          x,
-          y,
-          w: barWidth,
-          h: barHeight,
-          c: commits > 0 ? "#4CAF50" : "#333333",
-        })
-      }
+      drawCommands.push({
+        type: "rf",
+        x,
+        y,
+        w: squareSize,
+        h: squareSize,
+        c: color,
+      })
     }
 
     const payload: UlanziPayload = {
       text: commitData.total === 0 ? "No commits" : [
-        {t: `${commitData.total} `, c: '#4CAF50'},
+        {t: `${commitData.total} `, c: '#39D353'},
         {t: `commit${commitData.total > 1 ? "s" : ""}`, c: '#FFFFFF'},
       ],
       icon: "53090",
