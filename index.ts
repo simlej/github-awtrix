@@ -92,41 +92,47 @@ const fetchCommitActivity = Effect.gen(function* () {
     `author:${config.githubUsername} type:commit committer-date:>=${sevenDaysAgo.toISOString().split('T')[0]}`
   )
 
-  // Fetch all pages of commits (handle pagination)
-  let allItems: any[] = []
-  let page = 1
-  let hasMore = true
   const perPage = 100
 
-  while (hasMore) {
-    const response = yield* client.get(
-      `https://api.github.com/search/commits?q=${query}&per_page=${perPage}&page=${page}`,
-      {
-        headers: {
-          Authorization: `Bearer ${config.githubToken}`,
-          Accept: "application/vnd.github.cloak-preview+json",
-          "User-Agent": "ulanzi-pr-monitor",
-        },
-      }
-    )
+  // Fetch a single page of commits
+  const fetchPage = (page: number) =>
+    Effect.gen(function* () {
+      const response = yield* client.get(
+        `https://api.github.com/search/commits?q=${query}&per_page=${perPage}&page=${page}`,
+        {
+          headers: {
+            Authorization: `Bearer ${config.githubToken}`,
+            Accept: "application/vnd.github.cloak-preview+json",
+            "User-Agent": "ulanzi-pr-monitor",
+          },
+        }
+      )
 
-    const data = yield* HttpClientResponse.json(response)
-    const items = (data as any).items || []
+      const data = yield* HttpClientResponse.json(response)
+      return (data as any).items || []
+    })
 
-    allItems = allItems.concat(items)
+  // Fetch all pages using Effect.iterate
+  const allItems = yield* Effect.iterate(
+    { items: [] as any[], page: 1 },
+    {
+      while: ({ items, page }) => items.length < 1000 && (page === 1 || items.length % perPage === 0),
+      body: ({ items, page }) =>
+        Effect.gen(function* () {
+          const newItems = yield* fetchPage(page)
+          const allItems = items.concat(newItems)
 
-    // Check if there are more pages
-    // GitHub Search API returns up to 1000 results max
-    hasMore = items.length === perPage && allItems.length < 1000
-    page++
+          yield* Console.log(`Fetched page ${page}, got ${newItems.length} commits, total so far: ${allItems.length}`)
 
-    yield* Console.log(`Fetched page ${page - 1}, got ${items.length} commits, total so far: ${allItems.length}`)
-  }
+          return { items: allItems, page: page + 1 }
+        }),
+    }
+  )
 
   // Group commits by day (last 7 days)
   const commitsByDay = new Array(7).fill(0)
 
-  for (const commit of allItems) {
+  for (const commit of allItems.items) {
     const commitDate = new Date((commit as any).commit.committer.date)
     const daysDiff = Math.floor((today.getTime() - commitDate.getTime()) / (1000 * 60 * 60 * 24))
     if (daysDiff >= 0 && daysDiff < 7) {
@@ -136,7 +142,7 @@ const fetchCommitActivity = Effect.gen(function* () {
 
   return {
     days: commitsByDay,
-    total: allItems.length,
+    total: allItems.items.length,
   }
 })
 
