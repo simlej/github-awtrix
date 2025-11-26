@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  github-awtrix:
+    image: ghcr.io/simlej/github-awtrix:main
+    container_name: github-awtrix
+    restart: unless-stopped
+    environment:
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - GITHUB_USERNAME=${GITHUB_USERNAME}
+      - ULANZI_HOST=${ULANZI_HOST}
+      - POLL_INTERVAL_MINUTES=${POLL_INTERVAL_MINUTES}
+    # Run on host network to access local Ulanzi device
+    network_mode: host
