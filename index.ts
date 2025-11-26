@@ -9,6 +9,7 @@ const config = {
   githubUsername: process.env.GITHUB_USERNAME!,
   ulanziHost: process.env.ULANZI_HOST!, // e.g., "192.168.1.100"
   pollIntervalMinutes: process.env.POLL_INTERVAL_MINUTES,
+  commitChartDays: Number(process.env.COMMIT_CHART_DAYS || 14), // 7, 14, or 30 days
 }
 
 // --- Schemas ---
@@ -83,13 +84,13 @@ const fetchOpenPRs = Effect.gen(function* () {
 const fetchCommitActivity = Effect.gen(function* () {
   const client = yield* HttpClient.HttpClient
 
-  // Get commits from the last 7 days
+  // Get commits from the configured number of days
   const today = new Date()
-  const sevenDaysAgo = new Date(today)
-  sevenDaysAgo.setDate(today.getDate() - 6) // Last 7 days including today
+  const daysAgo = new Date(today)
+  daysAgo.setDate(today.getDate() - (config.commitChartDays - 1))
 
   const query = encodeURIComponent(
-    `author:${config.githubUsername} type:commit committer-date:>=${sevenDaysAgo.toISOString().split('T')[0]}`
+    `author:${config.githubUsername} type:commit committer-date:>=${daysAgo.toISOString().split('T')[0]}`
   )
 
   const perPage = 100
@@ -129,14 +130,14 @@ const fetchCommitActivity = Effect.gen(function* () {
     }
   )
 
-  // Group commits by day (last 7 days)
-  const commitsByDay = new Array(7).fill(0)
+  // Group commits by day
+  const commitsByDay = new Array(config.commitChartDays).fill(0)
 
   for (const commit of allItems.items) {
     const commitDate = new Date((commit as any).commit.committer.date)
     const daysDiff = Math.floor((today.getTime() - commitDate.getTime()) / (1000 * 60 * 60 * 24))
-    if (daysDiff >= 0 && daysDiff < 7) {
-      commitsByDay[6 - daysDiff]++ // Reverse order so today is last
+    if (daysDiff >= 0 && daysDiff < config.commitChartDays) {
+      commitsByDay[config.commitChartDays - 1 - daysDiff]++ // Reverse order so today is last
     }
   }
 
@@ -174,9 +175,24 @@ const pushCommitChartToUlanzi = (commitData: { days: number[]; total: number }) 
 
     // GitHub-style contribution chart with squares
     const maxCommits = Math.max(...commitData.days, 1)
-    const squareSize = 3
-    const spacing = 1
-    const startX = 2
+    const numDays = commitData.days.length
+    const displayWidth = 32
+
+    // Auto-calculate optimal square size and spacing to fill display
+    const calculateLayout = (days: number) => {
+      if (days <= 10) {
+        // 7-10 days: larger 3x3 squares
+        return { squareSize: 3, spacing: 1, startX: 1 }
+      } else if (days <= 16) {
+        // 11-16 days: medium 2x2 squares
+        return { squareSize: 2, spacing: 1, startX: 0 }
+      } else {
+        // 17-32 days: small 1x1 squares
+        return { squareSize: 1, spacing: 0, startX: 0 }
+      }
+    }
+
+    const { squareSize, spacing, startX } = calculateLayout(numDays)
     const startY = 1
 
     // Define color intensity levels (GitHub-style)
@@ -226,7 +242,7 @@ const pushCommitChartToUlanzi = (commitData: { days: number[]; total: number }) 
         Effect.asVoid
     )
 
-    yield* Console.log(`Pushed commit chart to Ulanzi: ${commitData.total} commits in last 7 days`)
+    yield* Console.log(`Pushed commit chart to Ulanzi: ${commitData.total} commits in last ${config.commitChartDays} days (${squareSize}x${squareSize}px squares)`)
   })
 
 // --- Main Program ---
@@ -246,11 +262,11 @@ const pollOnce = Effect.gen(function* () {
 })
 
 const pollCommitsOnce = Effect.gen(function* () {
-  yield* Console.log("Fetching commit activity...")
+  yield* Console.log(`Fetching commit activity for last ${config.commitChartDays} days...`)
 
   const commitData = yield* fetchCommitActivity
 
-  yield* Console.log(`Found ${commitData.total} commits in the last 7 days`)
+  yield* Console.log(`Found ${commitData.total} commits in the last ${config.commitChartDays} days`)
   yield* Console.log(`Commits by day: ${commitData.days.join(', ')}`)
 
   yield* pushCommitChartToUlanzi(commitData)

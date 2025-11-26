@@ -10,5 +10,6 @@ services:
       - GITHUB_USERNAME=${GITHUB_USERNAME}
       - ULANZI_HOST=${ULANZI_HOST}
       - POLL_INTERVAL_MINUTES=${POLL_INTERVAL_MINUTES}
+      - COMMIT_CHART_DAYS=${COMMIT_CHART_DAYS:-14}
     # Run on host network to access local Ulanzi device
     network_mode: host
