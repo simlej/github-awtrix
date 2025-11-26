@@ -92,24 +92,41 @@ const fetchCommitActivity = Effect.gen(function* () {
     `author:${config.githubUsername} type:commit committer-date:>=${sevenDaysAgo.toISOString().split('T')[0]}`
   )
 
-  const response = yield* client.get(
-    `https://api.github.com/search/commits?q=${query}&per_page=100`,
-    {
-      headers: {
-        Authorization: `Bearer ${config.githubToken}`,
-        Accept: "application/vnd.github.cloak-preview+json",
-        "User-Agent": "ulanzi-pr-monitor",
-      },
-    }
-  )
+  // Fetch all pages of commits (handle pagination)
+  let allItems: any[] = []
+  let page = 1
+  let hasMore = true
+  const perPage = 100
 
-  const data = yield* HttpClientResponse.json(response)
-  const items = (data as any).items || []
+  while (hasMore) {
+    const response = yield* client.get(
+      `https://api.github.com/search/commits?q=${query}&per_page=${perPage}&page=${page}`,
+      {
+        headers: {
+          Authorization: `Bearer ${config.githubToken}`,
+          Accept: "application/vnd.github.cloak-preview+json",
+          "User-Agent": "ulanzi-pr-monitor",
+        },
+      }
+    )
+
+    const data = yield* HttpClientResponse.json(response)
+    const items = (data as any).items || []
+
+    allItems = allItems.concat(items)
+
+    // Check if there are more pages
+    // GitHub Search API returns up to 1000 results max
+    hasMore = items.length === perPage && allItems.length < 1000
+    page++
+
+    yield* Console.log(`Fetched page ${page - 1}, got ${items.length} commits, total so far: ${allItems.length}`)
+  }
 
   // Group commits by day (last 7 days)
   const commitsByDay = new Array(7).fill(0)
 
-  for (const commit of items) {
+  for (const commit of allItems) {
     const commitDate = new Date((commit as any).commit.committer.date)
     const daysDiff = Math.floor((today.getTime() - commitDate.getTime()) / (1000 * 60 * 60 * 24))
     if (daysDiff >= 0 && daysDiff < 7) {
@@ -119,7 +136,7 @@ const fetchCommitActivity = Effect.gen(function* () {
 
   return {
     days: commitsByDay,
-    total: items.length,
+    total: allItems.length,
   }
 })
 
