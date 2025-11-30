@@ -28,8 +28,11 @@ const GitHubSearchResponse = Schema.Struct({
 
 const UlanziPayload = Schema.Struct({
   text: Schema.Union(Schema.String, Schema.Array(Schema.Struct({t: Schema.String, c: Schema.String}))),
-  icon: Schema.String,
+  icon: Schema.optional(Schema.String),
   duration: Schema.optional(Schema.Number),
+  draw: Schema.optional(Schema.Array(Schema.Struct({
+    dl: Schema.optional(Schema.Tuple(Schema.Number, Schema.Number, Schema.Number, Schema.Number, Schema.String)),
+  }))),
 })
 
 // --- Types ---
@@ -38,11 +41,12 @@ type GitHubSearchResponse = Schema.Schema.Type<typeof GitHubSearchResponse>
 type UlanziPayload = Schema.Schema.Type<typeof UlanziPayload>
 
 // --- GitHub Service ---
-const fetchOpenPRs = Effect.gen(function* () {
+const fetchMergedPRs = Effect.gen(function* () {
   const client = yield* HttpClient.HttpClient
 
+  const currentYear = new Date().getFullYear()
   const query = encodeURIComponent(
-    `author:${config.githubUsername} type:pr state:open`
+    `author:${config.githubUsername} type:pr is:merged merged:${currentYear}-01-01..${currentYear}-12-31`
   )
 
   const response = yield* client.get(
@@ -69,12 +73,42 @@ const pushToUlanzi = (prCount: number) =>
   Effect.gen(function* () {
     const client = yield* HttpClient.HttpClient
 
+    // Calculate year progress
+    const now = new Date()
+    const yearStart = new Date(now.getFullYear(), 0, 1)
+    const yearEnd = new Date(now.getFullYear() + 1, 0, 1)
+    const yearProgress = (now.getTime() - yearStart.getTime()) / (yearEnd.getTime() - yearStart.getTime())
+
+    // Create a progress bar on the bottom line (y=7, assuming 8px height display)
+    // Assuming 32px width display, with 8px icon on the left
+    const displayWidth = 32
+    const iconWidth = 8
+    const progressBarWidth = displayWidth - iconWidth
+    const progressPixels = Math.floor(yearProgress * progressBarWidth)
+
+    const draw = []
+
+    // Draw background line (dark gray) - starts after the icon
+    if (progressPixels < progressBarWidth) {
+      draw.push({
+        dl: [iconWidth + progressPixels, 7, displayWidth - 1, 7, "#333333"] as const
+      })
+    }
+
+    // Draw progress line (green) - starts after the icon
+    if (progressPixels > 0) {
+      draw.push({
+        dl: [iconWidth, 7, iconWidth + progressPixels - 1, 7, "#40C463"] as const
+      })
+    }
+
     const payload: UlanziPayload = {
-      text: prCount === 0 ? "No PRs" : [
-        {t: `${prCount} `, c: '#8783D7'},
-        {t: `PR${prCount > 1 ? "s" : ""}`, c: '#FFFFFF'},
-      ],
-      icon: "55529",
+      text: [{t:`${prCount} `, c: "#8783D7"}],
+      draw,
+      icon: '55529',
+      // icon: "45205"
+      // icon: "2327", // Github
+      // icon: "4373", // Prompt
     }
     yield* Console.log('Puhsing to Ulanzi')
     yield* HttpClientRequest.post(`http://${config.ulanziHost}/api/custom?name=github`).pipe(
@@ -83,16 +117,16 @@ const pushToUlanzi = (prCount: number) =>
         Effect.asVoid
     )
 
-    yield* Console.log(`Pushed to Ulanzi: ${payload.text}`)
+    yield* Console.log(`Pushed to Ulanzi: ${prCount} PRs with year progress bar`)
   })
 
 // --- Main Program ---
 const pollOnce = Effect.gen(function* () {
-  yield* Console.log("Fetching PRs...")
+  yield* Console.log("Fetching merged PRs...")
 
-  const { total, prs } = yield* fetchOpenPRs
+  const { total, prs } = yield* fetchMergedPRs
 
-  yield* Console.log(`Found ${total} open PRs`)
+  yield* Console.log(`Found ${total} merged PRs in ${new Date().getFullYear()}`)
 
   // Log PR titles for debugging
   for (const pr of prs) {
