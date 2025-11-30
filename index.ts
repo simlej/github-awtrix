@@ -9,7 +9,7 @@ const config = {
   githubUsername: process.env.GITHUB_USERNAME!,
   ulanziHost: process.env.ULANZI_HOST!, // e.g., "192.168.1.100"
   pollIntervalMinutes: process.env.POLL_INTERVAL_MINUTES,
-  commitChartDays: Number(process.env.COMMIT_CHART_DAYS || 14), // 7, 14, or 30 days
+  commitChartDays: Number(process.env.COMMIT_CHART_DAYS || 64), // 16 days across x 4 days down with 2x2 squares
 }
 
 // --- Schemas ---
@@ -27,31 +27,38 @@ const GitHubSearchResponse = Schema.Struct({
   items: Schema.Array(GitHubPR),
 })
 
-const GitHubCommitActivity = Schema.Struct({
-  days: Schema.Array(Schema.Number),
-  total: Schema.Number,
+const GitHubCommit = Schema.Struct({
+  commit: Schema.Struct({
+    committer: Schema.Struct({
+      date: Schema.String,
+    }),
+  }),
+})
+
+const GitHubCommitSearchResponse = Schema.Struct({
+  items: Schema.Array(GitHubCommit),
 })
 
 const UlanziPayload = Schema.Struct({
-  text: Schema.Union(Schema.String, Schema.Array(Schema.Struct({t: Schema.String, c: Schema.String}))),
-  icon: Schema.String,
+  text: Schema.optional(Schema.Union(Schema.String, Schema.Array(Schema.Struct({t: Schema.String, c: Schema.String})))),
+  icon: Schema.optional(Schema.String),
   duration: Schema.optional(Schema.Number),
   draw: Schema.optional(Schema.Array(Schema.Struct({
-    type: Schema.optional(Schema.String),
-    x: Schema.optional(Schema.Number),
-    y: Schema.optional(Schema.Number),
-    x1: Schema.optional(Schema.Number),
-    y1: Schema.optional(Schema.Number),
-    w: Schema.optional(Schema.Number),
-    h: Schema.optional(Schema.Number),
-    c: Schema.optional(Schema.String),
+    df: Schema.optional(Schema.Tuple(Schema.Number, Schema.Number, Schema.Number, Schema.Number, Schema.String)),
+    dp: Schema.optional(Schema.Tuple(Schema.Number, Schema.Number, Schema.String)),
+    dl: Schema.optional(Schema.Tuple(Schema.Number, Schema.Number, Schema.Number, Schema.Number, Schema.String)),
+    dr: Schema.optional(Schema.Tuple(Schema.Number, Schema.Number, Schema.Number, Schema.Number, Schema.String)),
+    dc: Schema.optional(Schema.Tuple(Schema.Number, Schema.Number, Schema.Number, Schema.String)),
+    dfc: Schema.optional(Schema.Tuple(Schema.Number, Schema.Number, Schema.Number, Schema.String)),
+    dt: Schema.optional(Schema.Tuple(Schema.Number, Schema.Number, Schema.String, Schema.String)),
   }))),
 })
 
 // --- Types ---
 type GitHubPR = Schema.Schema.Type<typeof GitHubPR>
 type GitHubSearchResponse = Schema.Schema.Type<typeof GitHubSearchResponse>
-type GitHubCommitActivity = Schema.Schema.Type<typeof GitHubCommitActivity>
+type GitHubCommit = Schema.Schema.Type<typeof GitHubCommit>
+type GitHubCommitSearchResponse = Schema.Schema.Type<typeof GitHubCommitSearchResponse>
 type UlanziPayload = Schema.Schema.Type<typeof UlanziPayload>
 
 // --- GitHub Service ---
@@ -90,7 +97,7 @@ const fetchCommitActivity = Effect.gen(function* () {
   daysAgo.setDate(today.getDate() - (config.commitChartDays - 1))
 
   const query = encodeURIComponent(
-    `author:${config.githubUsername} type:commit committer-date:>=${daysAgo.toISOString().split('T')[0]}`
+    `author:${config.githubUsername} committer-date:>=${daysAgo.toISOString().split('T')[0]}`
   )
 
   const perPage = 100
@@ -108,9 +115,8 @@ const fetchCommitActivity = Effect.gen(function* () {
           },
         }
       )
-
-      const data = yield* HttpClientResponse.json(response)
-      return (data as any).items || []
+      const data = yield* HttpClientResponse.schemaBodyJson(GitHubCommitSearchResponse)(response)
+      return data.items
     })
 
   // Fetch all pages using Effect.iterate
@@ -173,76 +179,71 @@ const pushCommitChartToUlanzi = (commitData: { days: number[]; total: number }) 
   Effect.gen(function* () {
     const client = yield* HttpClient.HttpClient
 
-    // GitHub-style contribution chart with squares
+    // GitHub-style contribution chart with 2x2 squares (4 pixels per day)
     const maxCommits = Math.max(...commitData.days, 1)
-    const numDays = commitData.days.length
-    const displayWidth = 32
 
-    // Auto-calculate optimal square size and spacing to fill display
-    const calculateLayout = (days: number) => {
-      if (days <= 10) {
-        // 7-10 days: larger 3x3 squares
-        return { squareSize: 3, spacing: 1, startX: 1 }
-      } else if (days <= 16) {
-        // 11-16 days: medium 2x2 squares
-        return { squareSize: 2, spacing: 1, startX: 0 }
-      } else {
-        // 17-32 days: small 1x1 squares
-        return { squareSize: 1, spacing: 0, startX: 0 }
+    // Display configuration: 32 columns, 8 rows
+    // With 2x2 squares: 16 days across, 4 days down = 64 days max
+    const squareSize = 2
+    const daysAcross = 16
+    const daysDown = 4
+
+    // Convert HSL to hex color
+    const hslToHex = (h: number, s: number, l: number): string => {
+      l /= 100
+      const a = s * Math.min(l, 1 - l) / 100
+      const f = (n: number) => {
+        const k = (n + h / 30) % 12
+        const color = l - a * Math.max(Math.min(k - 3, 9 - k, 1), -1)
+        return Math.round(255 * color).toString(16).padStart(2, '0')
       }
+      return `#${f(0)}${f(8)}${f(4)}`
     }
 
-    const { squareSize, spacing, startX } = calculateLayout(numDays)
-    const startY = 1
-
-    // Define color intensity levels (GitHub-style)
+    // Matrix-style color scheme using HSL with varying lightness
     const getColorForCommits = (commits: number): string => {
-      if (commits === 0) return "#161B22" // Dark background (no commits)
+      if (commits === 0) return hslToHex(120, 50, 8) // Very dark green for no commits
 
-      const intensity = Math.min(commits / Math.max(maxCommits, 4), 1)
+      const intensity = Math.min(commits / Math.max(maxCommits, 1), 1)
 
-      if (intensity <= 0.25) return "#0E4429" // Level 1 - darkest green
-      if (intensity <= 0.5) return "#006D32"  // Level 2
-      if (intensity <= 0.75) return "#26A641" // Level 3
-      return "#39D353"                        // Level 4 - brightest green
+      // Matrix green: Hue=120 (pure green), Saturation=100%, Lightness from 15% to 80%
+      const lightness = 15 + (intensity * 65)
+
+      return hslToHex(120, 100, lightness)
     }
 
-    const drawCommands = []
+    const drawCommands: Array<{df: [number, number, number, number, string]}> = []
 
-    // Draw squares for each day
-    for (let i = 0; i < commitData.days.length; i++) {
+    // Draw 2x2 squares for each day (column-first order)
+    for (let i = 0; i < commitData.days.length && i < daysAcross * daysDown; i++) {
       const commits = commitData.days[i]
-      const x = startX + i * (squareSize + spacing)
-      const y = startY
+      const col = Math.floor(i / daysDown)
+      const row = i % daysDown
+      const x = col * squareSize
+      const y = row * squareSize
       const color = getColorForCommits(commits)
 
       drawCommands.push({
-        type: "rf",
-        x,
-        y,
-        w: squareSize,
-        h: squareSize,
-        c: color,
+        df: [x, y, squareSize, squareSize, color],
       })
     }
 
     const payload: UlanziPayload = {
-      text: commitData.total === 0 ? "No commits" : [
-        {t: `${commitData.total} `, c: '#39D353'},
-        {t: `commit${commitData.total > 1 ? "s" : ""}`, c: '#FFFFFF'},
-      ],
-      icon: "53090",
       draw: drawCommands,
     }
 
     yield* Console.log('Pushing commit chart to Ulanzi')
-    yield* HttpClientRequest.post(`http://${config.ulanziHost}/api/custom?name=commits`).pipe(
+    const response = yield* HttpClientRequest.post(`http://${config.ulanziHost}/api/custom?name=commits`).pipe(
         HttpClientRequest.bodyJson(payload),
-        Effect.flatMap(client.execute),
-        Effect.asVoid
+        Effect.flatMap(client.execute)
     )
 
-    yield* Console.log(`Pushed commit chart to Ulanzi: ${commitData.total} commits in last ${config.commitChartDays} days (${squareSize}x${squareSize}px squares)`)
+    if (response.status !== 200) {
+      const body = yield* response.text
+      yield* Console.log('Error pushing commit chart:', response.status, body)
+    }
+
+    yield* Console.log(`Pushed commit chart to Ulanzi: ${commitData.total} commits in last ${config.commitChartDays} days (2x2px squares per day)`)
   })
 
 // --- Main Program ---
